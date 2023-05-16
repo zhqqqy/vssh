@@ -23,7 +23,7 @@ var (
 	errTimeout     = errors.New("execution timeout")
 	errSessNotEst  = errors.New("session not established")
 	errNotConn     = errors.New("client hasn't connected")
-
+	maxTokenSize = 1024 * 1024
 	maxOutChanBuf = 100
 	maxErrChanBuf = 100
 	maxInChanBuf  = 100
@@ -163,7 +163,8 @@ func (c *clientAttr) run(q *query) {
 	q.respChan <- resp
 
 	session.Start(q.cmd)
-
+	buf := make([]byte, maxTokenSize)
+	scanOut.Buffer(buf, maxTokenSize)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
