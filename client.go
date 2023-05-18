@@ -76,6 +76,7 @@ type Response struct {
 	session    *ssh.Session
 	exitStatus int
 	err        error
+	mutex sync.Mutex
 }
 
 // Stream represents data stream for given response.
@@ -147,7 +148,6 @@ func (c *clientAttr) run(q *query) {
 		q.errResp(c.addr, err)
 		return
 	}
-
 	resp := &Response{
 		id: c.addr,
 
@@ -167,6 +167,7 @@ func (c *clientAttr) run(q *query) {
 	scanOut.Buffer(buf, maxTokenSize)
 	wg.Add(1)
 	go func() {
+
 		defer wg.Done()
 		for scanOut.Scan() {
 			select {
@@ -217,7 +218,10 @@ LOOP:
 	if err = session.Wait(); err != nil {
 		switch e := err.(type) {
 		case *ssh.ExitError:
+			resp.mutex.Lock()
 			resp.exitStatus = e.ExitStatus()
+			resp.mutex.Unlock()
+
 		}
 	}
 
@@ -414,7 +418,9 @@ func (r *Response) setTimeout(t time.Duration) {
 		case <-r.toCancel:
 			return
 		case <-time.After(t):
+			r.mutex.Lock()
 			r.err = TimeoutError{errTimeout}
+			r.mutex.Unlock()
 			r.session.Close()
 		}
 	}()
@@ -471,6 +477,8 @@ func (r *Response) GetText(v *VSSH) (string, string, error) {
 
 // Err returns response error.
 func (r *Response) Err() error {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
 	return r.err
 }
 
@@ -481,9 +489,11 @@ func (r *Response) ID() string {
 
 // GetStream constructs a new stream from a response.
 func (r *Response) GetStream() *Stream {
+	r.mutex.Lock()
 	if r.err != nil {
 		return nil
 	}
+	r.mutex.Unlock()
 
 	return &Stream{
 		r: r,
@@ -492,7 +502,10 @@ func (r *Response) GetStream() *Stream {
 
 // ExitStatus returns the exit status of the remote command.
 func (r *Response) ExitStatus() int {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
 	return r.exitStatus
+
 }
 
 // ScanStdout provides a convenient interface for reading stdout
@@ -563,6 +576,8 @@ func (s *Stream) Close() error {
 
 // Err returns stream response error.
 func (s *Stream) Err() error {
+	s.r.mutex.Lock()
+	defer s.r.mutex.Unlock()
 	return s.r.err
 }
 
