@@ -186,6 +186,7 @@ func clientValidation(c *clientAttr) error {
 
 // Start starts vSSH, including action queue and re-connect procedures.
 // You can construct and start the vssh like below:
+//
 //	vs := vssh.New().Start()
 func (v *VSSH) Start() *VSSH {
 	ctx := context.Background()
@@ -223,6 +224,9 @@ func (v *VSSH) process(ctx context.Context) {
 						b.run(v)
 					case *query:
 						atomic.AddUint64(&v.stats.queries, 1)
+						b.run(v)
+					case *sftp:
+						atomic.AddUint64(&v.stats.processes, 1)
 						b.run(v)
 					}
 				case <-v.procSig:
@@ -271,15 +275,36 @@ func (v *VSSH) CurrentProc() uint64 {
 // SetInitNumProc sets the initial number of processes / workers.
 //
 // You need to set this number right after creating vssh.
+//
 //	vs := vssh.New()
 //	vs.SetInitNumProc(200)
 //	vs.Start()
+//
 // There are two other methods in case you need to change
 // the settings in the middle of your code.
+//
 //	IncreaseProc(n int)
 //	DecreaseProc(n int)
 func (v *VSSH) SetInitNumProc(n int) {
 	initNumProc = n
+}
+
+func (v *VSSH) Sftp(ctx context.Context, localPath string, remotePath string, timeout time.Duration, action int) chan *Response {
+	respChan := make(chan *Response)
+
+	c := &sftp{
+		ctx:         ctx,
+		localPath:   localPath,
+		remotePath:  remotePath,
+		respChan:    respChan,
+		respTimeout: timeout,
+		action:      action, // 0 = upload, 1 = remove
+	}
+	fmt.Println(c, "made it here")
+
+	v.actionQ <- c
+
+	return respChan
 }
 
 // Run sends a new run query with given context, command and timeout.
@@ -307,14 +332,15 @@ func (v *VSSH) Run(ctx context.Context, cmd string, timeout time.Duration, opts 
 
 // RunWithLabel runs the command on the specific clients which
 // they matched with given query statement.
-//	labels := map[string]string {
-//  	"POP" : "LAX",
-//  	"OS" : "JUNOS",
-//	}
-//	// sets labels to a client
-//	vs.AddClient(addr, config, vssh.SetLabels(labels))
-//	// run the command with label
-//	vs.RunWithLabel(ctx, cmd, timeout, "POP == LAX || POP == DCA) && OS == JUNOS")
+//
+//		labels := map[string]string {
+//	 	"POP" : "LAX",
+//	 	"OS" : "JUNOS",
+//		}
+//		// sets labels to a client
+//		vs.AddClient(addr, config, vssh.SetLabels(labels))
+//		// run the command with label
+//		vs.RunWithLabel(ctx, cmd, timeout, "POP == LAX || POP == DCA) && OS == JUNOS")
 func (v *VSSH) RunWithLabel(ctx context.Context, cmd, queryStmt string, timeout time.Duration, opts ...RunOption) (chan *Response, error) {
 	vis, err := parseExpr(queryStmt)
 	if err != nil {
@@ -342,6 +368,7 @@ func (v *VSSH) RunWithLabel(ctx context.Context, cmd, queryStmt string, timeout 
 }
 
 // SetLimitReaderStdout sets limit for stdout reader.
+//
 //	respChan := vs.Run(ctx, cmd, timeout, vssh.SetLimitReaderStdout(1024))
 func SetLimitReaderStdout(n int64) RunOption {
 	return func(q *query) {
