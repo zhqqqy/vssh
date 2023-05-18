@@ -8,13 +8,15 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	sftp2 "github.com/pkg/sftp"
+	"golang.org/x/crypto/ssh"
 	"io"
 	"log"
 	"net"
+	"os"
+	"path"
 	"sync"
 	"time"
-
-	"golang.org/x/crypto/ssh"
 )
 
 var (
@@ -23,10 +25,10 @@ var (
 	errTimeout     = errors.New("execution timeout")
 	errSessNotEst  = errors.New("session not established")
 	errNotConn     = errors.New("client hasn't connected")
-	maxTokenSize = 1024 * 1024
-	maxOutChanBuf = 100
-	maxErrChanBuf = 100
-	maxInChanBuf  = 100
+	maxTokenSize   = 1024 * 1024
+	maxOutChanBuf  = 100
+	maxErrChanBuf  = 100
+	maxInChanBuf   = 100
 
 	dialTimeoutSec = 5
 )
@@ -76,7 +78,7 @@ type Response struct {
 	session    *ssh.Session
 	exitStatus int
 	err        error
-	mutex sync.Mutex
+	mutex      sync.Mutex
 }
 
 // Stream represents data stream for given response.
@@ -233,7 +235,109 @@ LOOP:
 	close(rcOut)
 	close(rcErr)
 }
+func (c *clientAttr) transfer(s sftp) {
+	var (
+		//wg    sync.WaitGroup
+		done  = make(chan struct{})
+		rcOut = make(chan []byte, maxOutChanBuf)
+		rcIn  = make(chan []byte, maxInChanBuf)
+		rcErr = make(chan []byte, maxErrChanBuf)
+		rcSig = make(chan ssh.Signal, 1)
+	)
 
+	if c.client == nil {
+		setErr(c, errNotConn)
+		s.errResp(c.addr, errNotConn)
+		return
+	}
+
+	if c.isSessionsMaxOut() {
+		s.errResp(c.addr, MaxSessionsError{errMaxSessions})
+		return
+	}
+
+	c.incSessions()
+
+	sftp, err := c.newSftpSession()
+	if err != nil {
+		setErr(c, err)
+		s.errResp(c.addr, err)
+		return
+	}
+
+	resp := &Response{
+		id: c.addr,
+
+		outChan: rcOut,
+		inChan:  rcIn,
+		errChan: rcErr,
+		sigChan: rcSig,
+	}
+	s.respChan <- resp
+
+	if s.action == 0 {
+		uploadFile(sftp, s.localPath, s.remotePath)
+	}
+	sftp.Close()
+	close(done)
+	close(rcErr)
+	close(rcOut)
+	close(rcIn)
+
+}
+
+func uploadFile(sc *sftp2.Client, localPath string, remotePath string) {
+	srcFile, err := os.Open(localPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer srcFile.Close()
+
+	var remoteFileName = path.Base(localPath)
+	dstFile, err := sc.Create(path.Join(remotePath, remoteFileName))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer dstFile.Close()
+	buf := make([]byte, 1024)
+	for {
+		n, _ := srcFile.Read(buf)
+		if n == 0 {
+			break
+		}
+		dstFile.Write(buf)
+	}
+	fmt.Println("done copying file")
+}
+
+func (c *clientAttr) newSftpSession() (*sftp2.Client, error) {
+	if c.client == nil {
+		c.decSessions()
+		return nil, errUnreachable
+	}
+
+	cancelTimeout := make(chan struct{})
+
+	go func() {
+		select {
+		case <-time.After(time.Second * 5):
+			c.client.Close()
+		case <-cancelTimeout:
+
+		}
+	}()
+
+	sftpClient, err := sftp2.NewClient(c.client)
+	close(cancelTimeout)
+
+	if err != nil {
+		c.decSessions()
+		return sftpClient, err
+	}
+
+	return sftpClient, err
+
+}
 func (c *clientAttr) newSession() (*ssh.Session, error) {
 	if c.client == nil {
 		c.decSessions()
