@@ -8,9 +8,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/cheggaaa/pb/v3"
 	sftp2 "github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -276,7 +278,7 @@ func (c *clientAttr) transfer(s sftp) {
 	s.respChan <- resp
 
 	if s.action == 0 {
-		uploadFile(sftp, s.localPath, s.remotePath)
+		uploadFile(sftp, s.file, s.remotePath)
 	}
 	sftp.Close()
 	close(done)
@@ -286,27 +288,42 @@ func (c *clientAttr) transfer(s sftp) {
 
 }
 
-func uploadFile(sc *sftp2.Client, localPath string, remotePath string) {
-	srcFile, err := os.Open(localPath)
+func uploadFile(sc *sftp2.Client, srcFile fs.File, remotePath string) {
+	fInfo, err := srcFile.Stat()
+	srcFile.(io.ReadSeeker).Seek(0, 0)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer srcFile.Close()
-
-	var remoteFileName = path.Base(localPath)
+	var remoteFileName = path.Base(fInfo.Name())
 	dstFile, err := sc.Create(path.Join(remotePath, remoteFileName))
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer dstFile.Close()
-	buf := make([]byte, 1024)
-	for {
-		n, _ := srcFile.Read(buf)
-		if n == 0 {
-			break
-		}
-		dstFile.Write(buf)
+	switch srcFile.(type) {
+	case *os.File:
+		err = dstFile.Chmod(fInfo.Mode())
+	default:
+		err = dstFile.Chmod(os.FileMode(700))
 	}
+
+	if err != nil {
+		log.Fatal(fmt.Sprintf("Failed to set file mode: %v", err))
+	}
+	defer dstFile.Close()
+	// Show the transmission progress
+	bar := pb.Full.Start64(fInfo.Size())
+	defer bar.Finish()
+
+	writer := &progressWriter{
+		writer: dstFile,
+		bar:    bar,
+		total:  fInfo.Size(),
+	}
+	_, err = io.Copy(writer, srcFile)
+	if err != nil {
+		log.Fatal(fmt.Sprintf("Failed to copy file: %v", err))
+	}
+
 	fmt.Println("done copying file")
 }
 

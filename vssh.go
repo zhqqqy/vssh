@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -289,18 +290,17 @@ func (v *VSSH) SetInitNumProc(n int) {
 	initNumProc = n
 }
 
-func (v *VSSH) Sftp(ctx context.Context, localPath string, remotePath string, timeout time.Duration, action int) chan *Response {
+func (v *VSSH) Sftp(ctx context.Context, file fs.File, remotePath string, timeout time.Duration, action int) chan *Response {
 	respChan := make(chan *Response)
 
 	c := &sftp{
 		ctx:         ctx,
-		localPath:   localPath,
+		file:        file,
 		remotePath:  remotePath,
 		respChan:    respChan,
 		respTimeout: timeout,
 		action:      action, // 0 = upload, 1 = remove
 	}
-	fmt.Println(c, "made it here")
 
 	v.actionQ <- c
 
