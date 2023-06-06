@@ -292,12 +292,14 @@ func uploadFile(sc *sftp2.Client, srcFile fs.File, remotePath string) {
 	fInfo, err := srcFile.Stat()
 	srcFile.(io.ReadSeeker).Seek(0, 0)
 	if err != nil {
-		log.Fatal(err)
+		log.Println("get file stat: ", err)
+		return
 	}
 	var remoteFileName = path.Base(fInfo.Name())
 	dstFile, err := sc.Create(path.Join(remotePath, remoteFileName))
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("create file %s failed : %v \n", path.Join(remotePath, remoteFileName), err)
+		return
 	}
 	switch srcFile.(type) {
 	case *os.File:
@@ -307,8 +309,10 @@ func uploadFile(sc *sftp2.Client, srcFile fs.File, remotePath string) {
 	}
 
 	if err != nil {
-		log.Fatal(fmt.Sprintf("Failed to set file mode: %v", err))
+		log.Printf(fmt.Sprintf("Failed to set file mode: %v \n", err))
+		return
 	}
+
 	defer dstFile.Close()
 	// Show the transmission progress
 	bar := pb.Full.Start64(fInfo.Size())
@@ -321,7 +325,8 @@ func uploadFile(sc *sftp2.Client, srcFile fs.File, remotePath string) {
 	}
 	_, err = io.Copy(writer, srcFile)
 	if err != nil {
-		log.Fatal(fmt.Sprintf("Failed to copy file: %v", err))
+		log.Printf("Failed to copy file: %v", err)
+		return
 	}
 
 	fmt.Println("done copying file")
